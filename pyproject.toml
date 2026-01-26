@@ -1,0 +1,18 @@
+[project]
+name = "memory-cli"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.14.4",
+    "pydantic>=2.12.5",
+    "sqlite-utils>=3.39",
+]
+
+[project.scripts]
+memory-server = "memory_server.server:mcp.run"
+
+[tool.uv]
+
+
