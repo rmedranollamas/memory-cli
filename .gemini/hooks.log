@@ -1,0 +1,16 @@
+[2026-01-27 22:57:01] run-ruff.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] MODIFIED: src/memory_server/server.py
+[2026-01-27 22:57:02] run-ty.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] SUCCESS: src/memory_server/server.py
+[2026-01-27 22:57:10] run-ruff.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] MODIFIED: src/test_relationships.py
+[2026-01-27 22:57:10] run-ty.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] SUCCESS: src/test_relationships.py
+[2026-01-27 23:04:15] run-ruff.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] MODIFIED: src/memory_server/server.py
+[2026-01-27 23:04:15] run-ty.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] SUCCESS: src/memory_server/server.py
+[2026-01-27 23:04:38] run-ruff.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] FAILED: src/test_relationships.py
+[2026-01-27 23:04:38] run-ty.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] SUCCESS: src/test_relationships.py
+[2026-01-27 23:04:47] run-ruff.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] FAILED: src/test_relationships.py
+[2026-01-27 23:04:47] run-ty.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] SUCCESS: src/test_relationships.py
+[2026-01-27 23:05:06] run-ruff.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] SUCCESS: src/simple_test.py
+[2026-01-27 23:05:06] run-ty.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] SUCCESS: src/simple_test.py
+[2026-01-27 23:05:10] run-ruff.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] MODIFIED: src/test_rel_short.py
+[2026-01-27 23:05:10] run-ty.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] SUCCESS: src/test_rel_short.py
+[2026-01-27 23:05:22] run-ruff.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] MODIFIED: /home/pi/memory-cli/src/memory_server/server.py
+[2026-01-27 23:05:23] run-ty.sh [Session: dfcd2035-6cc5-4c5a-ace1-279715be7834] SUCCESS: /home/pi/memory-cli/src/memory_server/server.py
