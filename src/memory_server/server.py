@@ -2,6 +2,7 @@ import datetime
 import json
 import uuid
 import re
+import sqlite3
 from typing import Optional, List, Dict, Any
 from fastmcp import FastMCP
 import sqlite_utils
@@ -109,8 +110,9 @@ class MemoryManager:
         results = []
         # 1. Try FTS search
         try:
-            results = list(db["memories"].search(clean_query, limit=10))
-        except Exception:
+            results = list(db["memories"].search(clean_query, limit=20))
+        except sqlite3.OperationalError:
+            # Fallback for FTS errors
             results = []
 
         # 2. Fallback to LIKE if FTS is empty
@@ -120,7 +122,7 @@ class MemoryManager:
                 db["memories"].rows_where(
                     "content LIKE ? OR citation LIKE ?",
                     [like_query, like_query],
-                    limit=10,
+                    limit=20,
                 )
             )
 
@@ -131,25 +133,28 @@ class MemoryManager:
                 where_clause = " OR ".join(["content LIKE ?" for _ in words])
                 params = [f"%{w}%" for w in words]
                 results = list(
-                    db["memories"].rows_where(where_clause, params, limit=10)
+                    db["memories"].rows_where(where_clause, params, limit=20)
                 )
 
-        # Filter and Update
-        updated_results = []
+        # De-duplicate all results by ID before sorting/slicing
+        unique_results = []
+        seen_ids = set()
+        for row in results:
+            mid = row.get("id")
+            if mid and mid not in seen_ids:
+                seen_ids.add(mid)
+                unique_results.append(row)
+
         # Sort by latest and importance
-        results = sorted(
-            results,
+        sorted_results = sorted(
+            unique_results,
             key=lambda x: (x.get("is_latest", 1), x.get("importance", 1)),
             reverse=True,
         )
 
-        seen_ids = set()
-        for row in results[:5]:
-            mid = row.get("id")
-            if not mid or mid in seen_ids:
-                continue
-            seen_ids.add(mid)
-
+        final_results = []
+        for row in sorted_results[:5]:
+            mid = row["id"]
             new_count = row.get("access_count", 0) + 1
             is_long_term = 1 if new_count >= 3 else row.get("is_long_term", 0)
 
@@ -180,8 +185,8 @@ class MemoryManager:
                 )
             )
 
-            updated_results.append(row)
-        return updated_results
+            final_results.append(row)
+        return final_results
 
     def consolidate(self, ttl_days: int = 7) -> str:
         db = self.get_db()
@@ -196,11 +201,15 @@ class MemoryManager:
             )
         ]
 
-        for mid in stale_ids:
+        if stale_ids:
+            # Batch delete links associated with these memories
+            placeholders = ",".join(["?" for _ in stale_ids])
             db.execute(
-                "DELETE FROM links WHERE source_id = ? OR target_id = ?", [mid, mid]
+                f"DELETE FROM links WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
+                stale_ids + stale_ids,
             )
-            db["memories"].delete(mid)
+            # Batch delete the memories themselves
+            db.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", stale_ids)
 
         return f"Consolidation complete. Pruned {len(stale_ids)} stale memories."
 
