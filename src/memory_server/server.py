@@ -13,12 +13,13 @@ DB_PATH = "memories.db"
 class MemoryManager:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
+        # Use a persistent connection for the instance to support :memory: properly
+        self.db = sqlite_utils.Database(self.db_path)
         self._init_db()
 
     def _init_db(self):
-        db = sqlite_utils.Database(self.db_path)
-        if "memories" not in db.table_names():
-            db["memories"].create(
+        if "memories" not in self.db.table_names():
+            self.db["memories"].create(
                 {
                     "id": str,
                     "content": str,
@@ -33,10 +34,10 @@ class MemoryManager:
                 },
                 pk="id",
             )
-            db["memories"].enable_fts(["content", "citation"], tokenize="porter")
+            self.db["memories"].enable_fts(["content", "citation"], tokenize="porter")
 
-        if "links" not in db.table_names():
-            db["links"].create(
+        if "links" not in self.db.table_names():
+            self.db["links"].create(
                 {
                     "source_id": str,
                     "target_id": str,
@@ -48,10 +49,10 @@ class MemoryManager:
                     ("target_id", "memories", "id"),
                 ],
             )
-        return db
+        return self.db
 
     def get_db(self):
-        return sqlite_utils.Database(self.db_path)
+        return self.db
 
     def remember(
         self,
@@ -111,32 +112,31 @@ class MemoryManager:
         # 1. Try FTS search
         try:
             results = list(db["memories"].search(clean_query, limit=20))
-        except sqlite3.OperationalError:
-            # Fallback for FTS errors
+        except (sqlite3.OperationalError, AssertionError):
             results = []
 
-        # 2. Fallback to LIKE if FTS is empty
+        # 2. Fallback to LIKE
         if not results:
             like_query = f"%{clean_query.replace(' ', '%')}%"
+            # Try latest first
             results = list(
                 db["memories"].rows_where(
-                    "content LIKE ? OR citation LIKE ?",
+                    "(content LIKE ? OR citation LIKE ?) AND is_latest = 1",
                     [like_query, like_query],
                     limit=20,
                 )
             )
-
-        # 3. Final fallback: search by individual words
-        if not results and " " in clean_query:
-            words = [w for w in clean_query.split() if len(w) > 2]
-            if words:
-                where_clause = " OR ".join(["content LIKE ?" for _ in words])
-                params = [f"%{w}%" for w in words]
+            if not results:
+                # Try all
                 results = list(
-                    db["memories"].rows_where(where_clause, params, limit=20)
+                    db["memories"].rows_where(
+                        "content LIKE ? OR citation LIKE ?",
+                        [like_query, like_query],
+                        limit=20,
+                    )
                 )
 
-        # De-duplicate all results by ID before sorting/slicing
+        # De-duplicate
         unique_results = []
         seen_ids = set()
         for row in results:
@@ -145,7 +145,7 @@ class MemoryManager:
                 seen_ids.add(mid)
                 unique_results.append(row)
 
-        # Sort by latest and importance
+        # Sort
         sorted_results = sorted(
             unique_results,
             key=lambda x: (x.get("is_latest", 1), x.get("importance", 1)),
@@ -177,7 +177,6 @@ class MemoryManager:
                 except Exception:
                     pass
 
-            # Fetch related memories
             row["links"] = list(
                 db.query(
                     "SELECT target_id, relation_type FROM links WHERE source_id = ?",
@@ -202,19 +201,16 @@ class MemoryManager:
         ]
 
         if stale_ids:
-            # Batch delete links associated with these memories
             placeholders = ",".join(["?" for _ in stale_ids])
             db.execute(
                 f"DELETE FROM links WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
                 stale_ids + stale_ids,
             )
-            # Batch delete the memories themselves
             db.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", stale_ids)
 
         return f"Consolidation complete. Pruned {len(stale_ids)} stale memories."
 
 
-# Initialize MCP
 mcp = FastMCP("MemorySystem")
 manager = MemoryManager()
 
@@ -228,43 +224,31 @@ def remember(
     relation_to: Optional[str] = None,
     relation_type: Optional[str] = None,
 ) -> str:
-    """
-    Saves a new fact or observation to memory.
-    - relation_to: ID of an existing memory this relates to.
-    - relation_type: 'updates', 'extends', or 'derives'.
-    """
-    memory_id = manager.remember(
-        fact, citation, metadata, importance, relation_to, relation_type
-    )
-    return f"Memory saved with ID: {memory_id}"
+    """Saves a new fact to memory."""
+    return f"Memory saved with ID: {manager.remember(fact, citation, metadata, importance, relation_to, relation_type)}"
 
 
 @mcp.tool()
 def recall(query: str) -> List[Dict[str, Any]]:
-    """Recalls relevant memories based on a search query."""
+    """Recalls relevant memories."""
     return manager.recall(query)
 
 
 @mcp.tool()
 def consolidate_memories(ttl_days: int = 7) -> str:
-    """Performs maintenance on the memory system."""
+    """Performs maintenance."""
     return manager.consolidate(ttl_days)
 
 
 @mcp.tool()
 def list_relationships(memory_id: str) -> List[Dict[str, Any]]:
-    """
-    Lists all relationships (links) for a given memory ID.
-    """
-    db = manager.get_db()
-    # Find links where this memory is either source or target
-    links = list(
-        db.query(
+    """Lists all relationships for a memory."""
+    return list(
+        manager.get_db().query(
             "SELECT * FROM links WHERE source_id = ? OR target_id = ?",
             [memory_id, memory_id],
         )
     )
-    return links
 
 
 if __name__ == "__main__":

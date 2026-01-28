@@ -15,4 +15,9 @@ memory-server = "memory_server.server:mcp.run"
 
 [tool.uv]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
 
