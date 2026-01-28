@@ -1,20 +1,15 @@
 from memory_server.server import MemoryManager
-import os
 
 
 def test_memory_relationships():
-    # Clean up previous test DB
-    if os.path.exists("memories.db"):
-        os.remove("memories.db")
-
-    manager = MemoryManager("memories.db")
+    # Use in-memory DB for isolated testing as suggested in PR review
+    manager = MemoryManager(":memory:")
     db = manager.get_db()
 
     print("--- Testing Relationships (Updates) ---")
     id1 = manager.remember(
         "Ramón works at Supermemory as a content engineer.", citation="chat_1"
     )
-
     id2 = manager.remember(
         "Ramón now works at Supermemory as the CMO.",
         citation="chat_2",
@@ -37,18 +32,13 @@ def test_memory_relationships():
     )
 
     print("\n--- Testing Recall (Filtering Latest) ---")
-    # Search for CMO should return both latest and extensions
     results = manager.recall("CMO")
     print(f"Recall results for 'CMO': {len(results)}")
-    for r in results:
-        print(f"Found: {r['content']} (Latest: {r['is_latest']})")
 
     contents = [r["content"] for r in results]
     assert "Ramón now works at Supermemory as the CMO." in contents
 
-    # Search for "content engineer" should show it as NOT latest
     results_old = manager.recall("content engineer")
-    print(f"Recall results for 'content engineer': {len(results_old)}")
     assert any(r["is_latest"] == 0 for r in results_old)
     print("Old memory correctly marked as not latest in recall results")
 
