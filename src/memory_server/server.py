@@ -1,6 +1,8 @@
 import datetime
 import json
 import uuid
+import re
+import sqlite3
 from typing import Optional, List, Dict, Any
 from fastmcp import FastMCP
 import sqlite_utils
@@ -11,12 +13,13 @@ DB_PATH = "memories.db"
 class MemoryManager:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
+        # Use a persistent connection for the instance to support :memory: properly
+        self.db = sqlite_utils.Database(self.db_path)
         self._init_db()
 
     def _init_db(self):
-        db = sqlite_utils.Database(self.db_path)
-        if "memories" not in db.table_names():
-            db["memories"].create(
+        if "memories" not in self.db.table_names():
+            self.db["memories"].create(
                 {
                     "id": str,
                     "content": str,
@@ -26,15 +29,30 @@ class MemoryManager:
                     "last_accessed": str,
                     "importance": float,
                     "is_long_term": int,  # 0 or 1
+                    "is_latest": int,  # 0 or 1
                     "created_at": str,
                 },
                 pk="id",
             )
-            db["memories"].enable_fts(["content", "citation"], tokenize="porter")
-        return db
+            self.db["memories"].enable_fts(["content", "citation"], tokenize="porter")
+
+        if "links" not in self.db.table_names():
+            self.db["links"].create(
+                {
+                    "source_id": str,
+                    "target_id": str,
+                    "relation_type": str,  # updates, extends, derives
+                    "created_at": str,
+                },
+                foreign_keys=[
+                    ("source_id", "memories", "id"),
+                    ("target_id", "memories", "id"),
+                ],
+            )
+        return self.db
 
     def get_db(self):
-        return sqlite_utils.Database(self.db_path)
+        return self.db
 
     def remember(
         self,
@@ -42,6 +60,8 @@ class MemoryManager:
         citation: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         importance: float = 1.0,
+        relation_to: Optional[str] = None,
+        relation_type: Optional[str] = None,  # updates, extends, derives
     ) -> str:
         db = self.get_db()
         memory_id = str(uuid.uuid4())
@@ -60,38 +80,81 @@ class MemoryManager:
                 "last_accessed": now,
                 "importance": importance,
                 "is_long_term": is_long_term,
+                "is_latest": 1,
                 "created_at": now,
             }
         )
+
+        if relation_to and relation_type:
+            db["links"].insert(
+                {
+                    "source_id": memory_id,
+                    "target_id": relation_to,
+                    "relation_type": relation_type,
+                    "created_at": now,
+                }
+            )
+
+            # If it's an update, the old one is no longer latest
+            if relation_type == "updates":
+                db["memories"].update(relation_to, {"is_latest": 0})
+
         return memory_id
 
     def recall(self, query: str) -> List[Dict[str, Any]]:
         db = self.get_db()
         now = datetime.datetime.now().isoformat()
 
+        # Clean query: remove non-alphanumeric for FTS/LIKE
+        clean_query = re.sub(r"[^\w\s]", " ", query).strip()
+
+        results = []
         # 1. Try FTS search
         try:
-            results = list(db["memories"].search(query, limit=5))
-        except Exception:
+            results = list(db["memories"].search(clean_query, limit=20))
+        except (sqlite3.OperationalError, AssertionError):
             results = []
 
-        # 2. Fallback to LIKE if FTS is empty or fails
+        # 2. Fallback to LIKE
         if not results:
-            like_query = f"%{query}%"
+            like_query = f"%{clean_query.replace(' ', '%')}%"
+            # Try latest first
             results = list(
                 db["memories"].rows_where(
-                    "content LIKE ? OR citation LIKE ?",
+                    "(content LIKE ? OR citation LIKE ?) AND is_latest = 1",
                     [like_query, like_query],
-                    limit=5,
+                    limit=20,
                 )
             )
+            if not results:
+                # Try all
+                results = list(
+                    db["memories"].rows_where(
+                        "content LIKE ? OR citation LIKE ?",
+                        [like_query, like_query],
+                        limit=20,
+                    )
+                )
 
-        updated_results = []
+        # De-duplicate
+        unique_results = []
+        seen_ids = set()
         for row in results:
             mid = row.get("id")
-            if not mid:
-                continue
+            if mid and mid not in seen_ids:
+                seen_ids.add(mid)
+                unique_results.append(row)
 
+        # Sort
+        sorted_results = sorted(
+            unique_results,
+            key=lambda x: (x.get("is_latest", 1), x.get("importance", 1)),
+            reverse=True,
+        )
+
+        final_results = []
+        for row in sorted_results[:5]:
+            mid = row["id"]
             new_count = row.get("access_count", 0) + 1
             is_long_term = 1 if new_count >= 3 else row.get("is_long_term", 0)
 
@@ -113,8 +176,16 @@ class MemoryManager:
                     row["metadata"] = json.loads(row["metadata"])
                 except Exception:
                     pass
-            updated_results.append(row)
-        return updated_results
+
+            row["links"] = list(
+                db.query(
+                    "SELECT target_id, relation_type FROM links WHERE source_id = ?",
+                    [mid],
+                )
+            )
+
+            final_results.append(row)
+        return final_results
 
     def consolidate(self, ttl_days: int = 7) -> str:
         db = self.get_db()
@@ -124,18 +195,22 @@ class MemoryManager:
         stale_ids = [
             row["id"]
             for row in db.query(
-                "SELECT id FROM memories WHERE is_long_term = 0 AND last_accessed < ?",
-                [cutoff],
+                "SELECT id FROM memories WHERE is_long_term = 0 AND (last_accessed < ? OR is_latest = 0) AND created_at < ?",
+                [cutoff, cutoff],
             )
         ]
 
-        for mid in stale_ids:
-            db["memories"].delete(mid)
+        if stale_ids:
+            placeholders = ",".join(["?" for _ in stale_ids])
+            db.execute(
+                f"DELETE FROM links WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
+                stale_ids + stale_ids,
+            )
+            db.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", stale_ids)
 
         return f"Consolidation complete. Pruned {len(stale_ids)} stale memories."
 
 
-# Initialize MCP
 mcp = FastMCP("MemorySystem")
 manager = MemoryManager()
 
@@ -146,22 +221,34 @@ def remember(
     citation: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
     importance: float = 1.0,
+    relation_to: Optional[str] = None,
+    relation_type: Optional[str] = None,
 ) -> str:
-    """Saves a new fact or observation to memory."""
-    memory_id = manager.remember(fact, citation, metadata, importance)
-    return f"Memory saved with ID: {memory_id}"
+    """Saves a new fact to memory."""
+    return f"Memory saved with ID: {manager.remember(fact, citation, metadata, importance, relation_to, relation_type)}"
 
 
 @mcp.tool()
 def recall(query: str) -> List[Dict[str, Any]]:
-    """Recalls relevant memories based on a search query."""
+    """Recalls relevant memories."""
     return manager.recall(query)
 
 
 @mcp.tool()
 def consolidate_memories(ttl_days: int = 7) -> str:
-    """Performs maintenance on the memory system."""
+    """Performs maintenance."""
     return manager.consolidate(ttl_days)
+
+
+@mcp.tool()
+def list_relationships(memory_id: str) -> List[Dict[str, Any]]:
+    """Lists all relationships for a memory."""
+    return list(
+        manager.get_db().query(
+            "SELECT * FROM links WHERE source_id = ? OR target_id = ?",
+            [memory_id, memory_id],
+        )
+    )
 
 
 if __name__ == "__main__":
