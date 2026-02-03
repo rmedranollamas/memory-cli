@@ -151,7 +151,8 @@ class MemoryManager:
                 score += 10
             if x.get("is_latest"):
                 score += 5
-            score += x.get("importance", 1) / 10.0
+            # Importance can range 1-10, so it now has comparable weight to is_latest
+            score += x.get("importance", 1.0)
             return score
 
         sorted_results = sorted(unique_results, key=sort_key, reverse=True)
