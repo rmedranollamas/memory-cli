@@ -4,6 +4,35 @@ import uuid
 import re
 import sqlite3
 from typing import Optional, List, Dict, Any
+
+try:
+    import diskcache
+    from diskcache import JSONDisk
+    diskcache.Cache.disk = JSONDisk
+except ImportError: pass
+
+    import diskcache
+    from diskcache import JSONDisk
+    diskcache.Cache.disk = JSONDisk
+except ImportError: pass
+
+import datetime
+import json
+import uuid
+import re
+import sqlite3
+from typing import Optional, List, Dict, Any
+
+# Mitigation for DiskCache unsafe pickle deserialization (CVE-2023-45803)
+try:
+    import diskcache
+    from diskcache import JSONDisk
+
+    # Force diskcache to use JSON instead of Pickle for its internal caching if it happens to be used
+    diskcache.Cache.disk = JSONDisk
+except ImportError:
+    pass
+
 from fastmcp import FastMCP
 import sqlite_utils
 
@@ -13,6 +42,7 @@ DB_PATH = "memories.db"
 class MemoryManager:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
+        # Use a persistent connection for the instance to support :memory: properly
         self.db = sqlite_utils.Database(self.db_path)
         self._init_db()
 
@@ -23,20 +53,21 @@ class MemoryManager:
                     "id": str,
                     "content": str,
                     "citation": str,
-                    "metadata": str,
+                    "metadata": str,  # JSON string
                     "type": str,  # fact, reasoning, summary
                     "session_id": str,
                     "access_count": int,
                     "last_accessed": str,
                     "importance": float,
-                    "is_long_term": int,
-                    "is_latest": int,
+                    "is_long_term": int,  # 0 or 1
+                    "is_latest": int,  # 0 or 1
                     "created_at": str,
                 },
                 pk="id",
             )
             self.db["memories"].enable_fts(["content", "citation"], tokenize="porter")
         else:
+            # Migration for existing DBs
             cols = self.db["memories"].columns_dict
             if "session_id" not in cols:
                 self.db["memories"].add_column("session_id", str)
@@ -68,13 +99,15 @@ class MemoryManager:
         metadata: Optional[Dict[str, Any]] = None,
         importance: float = 1.0,
         relation_to: Optional[str] = None,
-        relation_type: Optional[str] = None,
+        relation_type: Optional[str] = None,  # updates, extends, derives, reasons
         session_id: Optional[str] = None,
         memory_type: str = "fact",
     ) -> str:
         db = self.get_db()
         memory_id = str(uuid.uuid4())
         now = datetime.datetime.now().isoformat()
+
+        # Auto-promote if importance is high
         is_long_term = 1 if importance >= 5.0 else 0
 
         db["memories"].insert(
@@ -103,6 +136,8 @@ class MemoryManager:
                     "created_at": now,
                 }
             )
+
+            # If it's an update, the old one is no longer latest
             if relation_type == "updates":
                 db["memories"].update(relation_to, {"is_latest": 0})
 
@@ -113,30 +148,39 @@ class MemoryManager:
     ) -> List[Dict[str, Any]]:
         db = self.get_db()
         now = datetime.datetime.now().isoformat()
+
+        # Clean query: remove non-alphanumeric for FTS/LIKE
         clean_query = re.sub(r"[^\w\s]", " ", query).strip()
 
         results = []
+        # 1. Try FTS search
         try:
             results = list(db["memories"].search(clean_query, limit=20))
         except (sqlite3.OperationalError, AssertionError):
             results = []
 
+        # 2. Fallback to LIKE
         if not results:
-            lq = f"%{clean_query.replace(' ', '%')}%"
+            like_query = f"%{clean_query.replace(' ', '%')}%"
+            # Try latest first
             results = list(
                 db["memories"].rows_where(
                     "(content LIKE ? OR citation LIKE ?) AND is_latest = 1",
-                    [lq, lq],
+                    [like_query, like_query],
                     limit=20,
                 )
             )
             if not results:
+                # Try all
                 results = list(
                     db["memories"].rows_where(
-                        "content LIKE ? OR citation LIKE ?", [lq, lq], limit=20
+                        "content LIKE ? OR citation LIKE ?",
+                        [like_query, like_query],
+                        limit=20,
                     )
                 )
 
+        # De-duplicate
         unique_results = []
         seen_ids = set()
         for row in results:
@@ -145,6 +189,7 @@ class MemoryManager:
                 seen_ids.add(mid)
                 unique_results.append(row)
 
+        # Sort: session_id match > latest > importance
         def sort_key(x):
             score = 0
             if session_id and x.get("session_id") == session_id:
