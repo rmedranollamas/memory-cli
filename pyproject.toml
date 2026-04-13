@@ -17,7 +17,7 @@ memory-server = "memory_server.server:mcp.run"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
 ]
 
 
