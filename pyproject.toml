@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "fastmcp>=2.14.4",
-    "pydantic>=2.12.5",
+    "pydantic>=2.13.0",
     "sqlite-utils>=3.39",
 ]
 
