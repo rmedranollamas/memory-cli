@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "fastmcp>=2.14.4",
+    "fastmcp>=3.2.3",
     "pydantic>=2.12.5",
     "sqlite-utils>=3.39",
 ]
